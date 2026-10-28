@@ -3427,7 +3427,9 @@ func handleChatStreaming(
                 // it arrives. The prompt is saved here, not on the first chunk: that raced the
                 // decode step the producer had already started on the same KVCacheSimple. An
                 // early exit (stop sequence, disconnect) never reaches `.info` and skips the save.
-                if !firstToken, let onPrefillDone { await onPrefillDone() }
+                // The save does not wait for a chunk: a turn that is only a tool call never
+                // yields one, and its prompt is exactly what the next turn of the loop needs.
+                if let onPrefillDone { await onPrefillDone() }
                 // The chunk count undercounts: tokens the decoder buffers (tool-call
                 // bodies, partial text) emit no chunk. `info` carries the real count.
                 completionTokenCount = info.generationTokenCount
@@ -3603,7 +3605,7 @@ func handleChatNonStreaming(
         case .info(let info):
             // The producer's last yield; see the matching comment in `handleChatStreaming`.
             // The stop-sequence `break` above exits before `.info`, so it skips the save.
-            if !firstToken, let onPrefillDone { await onPrefillDone() }
+            if let onPrefillDone { await onPrefillDone() }
             generationStopReason = info.stopReason
             completionTokenCount = info.generationTokenCount  // real count; see handleChatStreaming
         }
