@@ -407,6 +407,34 @@ else
     fail "json_object stream differs from non-streaming: '$(echo "$ST_JSON" | head -c 60)' vs '$(echo "$NS_JSON" | head -c 60)'"
 fi
 
+# ── 14. An abandoned non-streaming request stops generating ───────────────────
+# The SSE handlers cancel generation when the client goes away (their next write fails).
+# A non-streaming request writes nothing until the end, so the server never noticed the
+# client had left: the answer ran to max_tokens for nobody and held the slot, and with
+# the default --parallel 1 every later request queued behind it. Clients that time out
+# and retry (the OpenAI SDKs' default) stacked up several such generations.
+log "Test 14: a non-streaming request the client abandons stops generating"
+metric() { curl -sf "$URL/metrics" | awk -v m="$1" '$1 == m { print $2 }'; }
+TOKENS_BEFORE=$(metric swiftlm_tokens_generated_total)
+# curl closes the socket after half a second; left alone, the request would generate 1500 tokens.
+curl -s --max-time 0.5 "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"$LONG_ASK\"}],\"max_tokens\":1500,\"temperature\":0.9}" >/dev/null 2>&1 || true
+# Once the server has noticed, the request is no longer active and its token count is the
+# few chunks it managed before the cancel, not a full answer.
+ACTIVE=1
+for _ in $(seq 1 20); do
+    ACTIVE=$(metric swiftlm_requests_active)
+    [ "$ACTIVE" = "0" ] && break
+    sleep 0.25
+done
+TOKENS_AFTER=$(metric swiftlm_tokens_generated_total)
+ABANDONED_TOKENS=$((TOKENS_AFTER - TOKENS_BEFORE))
+if [ "$ACTIVE" = "0" ] && [ "$ABANDONED_TOKENS" -lt 400 ]; then
+    pass "the abandoned request stopped after $ABANDONED_TOKENS tokens and released its slot"
+else
+    fail "the abandoned request generated $ABANDONED_TOKENS tokens; requests_active=$ACTIVE 5 s after the client left"
+fi
+
 log "═══════════════════════════════════════"
 log "Results: $PASS passed, $FAIL failed, $SKIP skipped, $TOTAL total"
 log "═══════════════════════════════════════"
